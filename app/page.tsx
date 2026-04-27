@@ -109,6 +109,8 @@ const T = {
 }
 
 function normalizeResult(data: unknown): GenerateResult {
+  console.log('[normalizeResult] raw data keys:', data && typeof data === 'object' ? Object.keys(data as object) : data)
+  console.log('[normalizeResult] full data:', JSON.stringify(data))
   const d = (data ?? {}) as Record<string, unknown>
   const aud = (d.audience ?? {}) as Record<string, string>
   const art = (d.article ?? {}) as Record<string, string>
@@ -116,6 +118,8 @@ function normalizeResult(data: unknown): GenerateResult {
   const soc = (d.social ?? {}) as Record<string, unknown>
   const ig = (soc.instagram ?? {}) as Record<string, string>
   const fb = (soc.facebook ?? {}) as Record<string, string>
+  if (!d.seo_meta) console.warn('[normalizeResult] seo_meta missing from API response')
+  if (!d.social) console.warn('[normalizeResult] social missing from API response')
   return {
     audience: {
       name: aud.name ?? '',
@@ -724,7 +728,9 @@ export default function App() {
           body: JSON.stringify({ url, goal, lang, topicMode: mode, topic }),
         }).then(async (res) => {
           if (!res.ok) throw new Error('API error')
-          return res.json()
+          const json = await res.json()
+          console.log('[handleGenerate] API response keys:', json && typeof json === 'object' ? Object.keys(json) : json)
+          return json
         }),
         new Promise((resolve) => setTimeout(resolve, MIN_ANALYSE_MS)),
       ])

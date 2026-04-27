@@ -99,17 +99,26 @@ Use the generate_seo_content tool to return the complete result.`
 
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: SYSTEM_PROMPT,
       tools: [CONTENT_TOOL],
       tool_choice: { type: 'tool', name: 'generate_seo_content' },
       messages: [{ role: 'user', content: userPrompt }],
     })
 
+    console.log('[generate] stop_reason:', message.stop_reason)
+
     const toolUse = message.content.find((c): c is Anthropic.ToolUseBlock => c.type === 'tool_use')
     if (!toolUse) throw new Error('No tool_use block in response')
 
-    return NextResponse.json(toolUse.input)
+    const result = toolUse.input as Record<string, unknown>
+    console.log('[generate] top-level keys:', Object.keys(result))
+    console.log('[generate] has seo_meta:', 'seo_meta' in result)
+    console.log('[generate] has social:', 'social' in result)
+    console.log('[generate] seo_meta:', JSON.stringify(result.seo_meta))
+    console.log('[generate] social keys:', result.social ? Object.keys(result.social as object) : 'missing')
+
+    return NextResponse.json(result)
   } catch (error) {
     console.error('Generate error:', error)
     return NextResponse.json({ error: 'Failed to generate content. Please try again.' }, { status: 500 })

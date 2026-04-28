@@ -3,11 +3,12 @@ import { NextResponse } from 'next/server'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const SYSTEM_PROMPT = `You are a senior content strategist with 15 years of experience in e-commerce brands in Australia and Colombia. You create SEO and GEO content that sounds authentically like the brand — never generic. Core principles: 1) Mirror the brand's exact vocabulary and tone. 2) Write for the specific identified audience. 3) SEO-optimised without sacrificing readability. 4) Include FAQ section at the end for GEO optimisation so ChatGPT and Perplexity cite the content. Use Australian English for EN brands. Use Colombian Spanish (Colombia) for ES — all article content, audience insights, social captions, meta description, and geo_tip must be written entirely in Colombian Spanish when language is ES. The current year is 2026. Write all content as if today is 2026. When referencing statistics, studies or trends, you can cite older sources but frame them correctly — for example "a 2024 study found..." not "this year a study found...". Never present outdated information as current.`
+const SYSTEM_PROMPT = `You are a senior content strategist with 15 years of experience in e-commerce brands in Australia and Colombia. You create SEO and GEO content that sounds authentically like the brand — never generic. Core principles: 1) Mirror the brand's exact vocabulary and tone. 2) Write for the specific identified audience. 3) SEO-optimised without sacrificing readability. 4) Include FAQ section at the end for GEO optimisation so ChatGPT and Perplexity cite the content. Use Australian English for EN brands. Use Colombian Spanish (Colombia) for ES — all content must be written entirely in Colombian Spanish when language is ES. The current year is 2026. Write all content as if today is 2026. When referencing statistics, studies or trends, frame them correctly — for example "a 2024 study found..." not "this year a study found...". Never present outdated information as current.`
 
+// ── CALL 1: audience + article ────────────────────────────
 const CONTENT_TOOL: Anthropic.Tool = {
-  name: 'generate_seo_content',
-  description: 'Generate complete SEO/GEO content for the brand, fully in the requested language.',
+  name: 'generate_content',
+  description: 'Generate the audience profile and full blog article for the brand.',
   input_schema: {
     type: 'object',
     properties: {
@@ -27,12 +28,24 @@ const CONTENT_TOOL: Anthropic.Tool = {
           title: { type: 'string' },
           full_content: {
             type: 'string',
-            description: 'Minimum 800 words. Use ## for H2 headings. Use **text** for bold. Separate paragraphs with a blank line. End with 3 FAQ items formatted as "Q: question\nA: answer".',
+            description: 'Minimum 800 words. Use ## for H2 headings. Use **text** for bold. Separate paragraphs with a blank line. End with 3 FAQ items formatted as "Q: question\\nA: answer".',
           },
           word_count: { type: 'string', description: 'e.g. 1,200 words' },
         },
         required: ['title', 'full_content', 'word_count'],
       },
+    },
+    required: ['audience', 'article'],
+  },
+}
+
+// ── CALL 2: seo_meta + social ─────────────────────────────
+const SEO_SOCIAL_TOOL: Anthropic.Tool = {
+  name: 'generate_seo_social',
+  description: 'Generate SEO metadata and social media posts based on the provided article.',
+  input_schema: {
+    type: 'object',
+    properties: {
       seo_meta: {
         type: 'object',
         properties: {
@@ -70,7 +83,7 @@ const CONTENT_TOOL: Anthropic.Tool = {
         required: ['instagram', 'facebook'],
       },
     },
-    required: ['audience', 'article', 'seo_meta', 'social'],
+    required: ['seo_meta', 'social'],
   },
 }
 
@@ -81,7 +94,7 @@ export async function POST(request: Request) {
     const language = lang === 'es' ? 'Colombian Spanish (ES)' : 'Australian English (EN)'
     const langInstruction =
       lang === 'es'
-        ? 'IMPORTANT: Write ALL content entirely in Colombian Spanish — article, audience insights, social captions, meta description, and tips. Do not use English anywhere in the output.'
+        ? 'IMPORTANT: Write ALL content entirely in Colombian Spanish — article, audience insights, captions, meta description, and tips.'
         : 'Write all content in Australian English.'
 
     const topicPart =
@@ -89,38 +102,79 @@ export async function POST(request: Request) {
         ? `Write about this specific topic: ${topic}`
         : `Choose the highest-impact keyword opportunity for this brand.`
 
-    const userPrompt = `Analyse this website: ${url}.
+    // ── CALL 1: audience + article ──────────────────────────
+    const msg1 = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 6000,
+      system: SYSTEM_PROMPT,
+      tools: [CONTENT_TOOL],
+      tool_choice: { type: 'tool', name: 'generate_content' },
+      messages: [
+        {
+          role: 'user',
+          content: `Analyse this website: ${url}.
 Content goal: ${goal}.
 Output language: ${language}.
 ${langInstruction}
 ${topicPart}
 
-Use the generate_seo_content tool to return the complete result.`
-
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 8192,
-      system: SYSTEM_PROMPT,
-      tools: [CONTENT_TOOL],
-      tool_choice: { type: 'tool', name: 'generate_seo_content' },
-      messages: [{ role: 'user', content: userPrompt }],
+Generate the audience profile and the full blog article.`,
+        },
+      ],
     })
 
-    console.log('[generate] stop_reason:', message.stop_reason)
+    console.log('[generate] call1 stop_reason:', msg1.stop_reason)
 
-    const toolUse = message.content.find((c): c is Anthropic.ToolUseBlock => c.type === 'tool_use')
-    if (!toolUse) throw new Error('No tool_use block in response')
+    const tool1 = msg1.content.find((c): c is Anthropic.ToolUseBlock => c.type === 'tool_use')
+    if (!tool1) throw new Error('No tool_use in call 1')
 
-    const result = toolUse.input as Record<string, unknown>
-    console.log('[generate] top-level keys:', Object.keys(result))
-    console.log('[generate] has seo_meta:', 'seo_meta' in result)
-    console.log('[generate] has social:', 'social' in result)
-    console.log('[generate] seo_meta:', JSON.stringify(result.seo_meta))
-    console.log('[generate] social keys:', result.social ? Object.keys(result.social as object) : 'missing')
+    const { audience, article } = tool1.input as {
+      audience: { name: string; search_behaviour: string; trust_signals: string; brand_voice: string }
+      article: { title: string; full_content: string; word_count: string }
+    }
 
-    return NextResponse.json(result)
+    // ── CALL 2: seo_meta + social ───────────────────────────
+    const msg2 = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
+      system: SYSTEM_PROMPT,
+      tools: [SEO_SOCIAL_TOOL],
+      tool_choice: { type: 'tool', name: 'generate_seo_social' },
+      messages: [
+        {
+          role: 'user',
+          content: `Based on the article below for ${url}, generate the SEO metadata and social media posts.
+Output language: ${language}.
+${langInstruction}
+
+Article title: ${article.title}
+
+Article content:
+${article.full_content}`,
+        },
+      ],
+    })
+
+    console.log('[generate] call2 stop_reason:', msg2.stop_reason)
+
+    const tool2 = msg2.content.find((c): c is Anthropic.ToolUseBlock => c.type === 'tool_use')
+    if (!tool2) throw new Error('No tool_use in call 2')
+
+    const { seo_meta, social } = tool2.input as {
+      seo_meta: {
+        slug: string; primary_keyword: string; secondary_keywords: string
+        meta_description: string; est_visits: string; seo_difficulty: string
+        geo_score: string; geo_tip: string
+      }
+      social: {
+        instagram: { caption: string; hashtags: string }
+        facebook: { caption: string; hashtags: string }
+      }
+    }
+
+    return NextResponse.json({ audience, article, seo_meta, social })
   } catch (error) {
-    console.error('Generate error:', error)
+    console.error('[generate] error:', error)
     return NextResponse.json({ error: 'Failed to generate content. Please try again.' }, { status: 500 })
   }
 }
